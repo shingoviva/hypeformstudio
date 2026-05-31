@@ -70,6 +70,29 @@
     #interaction-hud .hud-title { font-size: 11px; font-weight: 700; letter-spacing: 0.7px; text-transform: uppercase; color: rgba(143, 233, 255, 0.72); margin-bottom: 4px; }
     #interaction-hud .hud-line { font-size: 12px; line-height: 1.35; color: rgba(245, 248, 246, 0.58); white-space: nowrap; }
     #interaction-hud .hud-muted { color: rgba(205, 213, 211, 0.45); }
+    .gui-action-row { display: flex; gap: 6px; padding: 4px 8px 8px; }
+    .gui-action-row button {
+      flex: 1 1 0;
+      min-width: 0;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.07);
+      color: rgba(255,255,255,0.82);
+      border-radius: 4px;
+      font: 600 10px/1 'Outfit', sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      padding: 6px 4px;
+      cursor: pointer;
+      transition: background 0.16s ease, border-color 0.16s ease, opacity 0.16s ease;
+    }
+    .gui-action-row button:hover {
+      background: rgba(255,255,255,0.12);
+      border-color: rgba(255,255,255,0.16);
+    }
+    .gui-action-row button:disabled {
+      opacity: 0.42;
+      cursor: default;
+    }
   </style>
 
   <script type="importmap">
@@ -98,7 +121,6 @@
     <button id="load-btn">LOAD</button>
     <input type="file" id="load-input" accept=".json" style="display: none;">
   </div>
-
   <div id="help-modal">
     <div class="close-btn" id="help-close-btn">&times;</div>
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; margin-right: 24px;">
@@ -380,6 +402,8 @@
     function applySurfacePreset(material, preset) {
       if (!material || !preset) return;
       material.color.setHex(preset.displayColor);
+      if (material.emissive) material.emissive.set(0x000000);
+      if ('emissiveIntensity' in material) material.emissiveIntensity = 0;
       material.roughness = preset.roughness;
       material.metalness = preset.metalness;
       material.needsUpdate = true;
@@ -849,6 +873,14 @@
         gridLossStops: 1.74,
         spillFactor: 0.56,
         bounceBias: 1.0,
+        shadowScale: 1.12,
+        shadowSourceScale: 1.08,
+        emitterAreaGain: 0.042,
+        emitterSpotGain: 0.7,
+        gridEmitterAreaGain: 0.031,
+        gridEmitterSpotGain: 0.72,
+        gridPenumbraScale: 0.9,
+        gridSoftnessScale: 0.9,
         gridCompatible: true,
         gridBeamVerified: true,
         verified: 'Public geom: 90 x 120 cm; recessed double diffuser; silver interior; 50 deg grid ref'
@@ -867,6 +899,14 @@
         gridLossStops: 1.69,
         spillFactor: 0.6,
         bounceBias: 1.0,
+        shadowScale: 1.16,
+        shadowSourceScale: 1.12,
+        emitterAreaGain: 0.038,
+        emitterSpotGain: 0.68,
+        gridEmitterAreaGain: 0.029,
+        gridEmitterSpotGain: 0.7,
+        gridPenumbraScale: 0.9,
+        gridSoftnessScale: 0.9,
         gridCompatible: true,
         gridBeamVerified: true,
         verified: 'Public geom: 90 cm dia; 40 cm depth; 8 rods; silver interior; 50 deg grid ref'
@@ -888,6 +928,12 @@
         hasFocus: true,
         reflectiveUmbrella: true,
         focusBeamRange: [88, 126],
+        sizeResponse: {
+          lossStopsPerStop: 0.28,
+          beamDegPerStop: 10,
+          spillPerStop: 0.18,
+          beamClamp: [84, 136]
+        },
         verified: 'Public geom: 105 cm open; 38 cm deep; 16 rods; white deep bounce, focusable soft spread'
       },
       'Deep Umbrella Silver 105': {
@@ -907,6 +953,12 @@
         hasFocus: true,
         reflectiveUmbrella: true,
         focusBeamRange: [68, 110],
+        sizeResponse: {
+          lossStopsPerStop: 0.18,
+          beamDegPerStop: 7,
+          spillPerStop: 0.1,
+          beamClamp: [64, 116]
+        },
         verified: 'Public geom: 105 cm open; 38 cm deep; 16 rods; silver deep bounce, higher punch'
       },
       'Deep Umbrella Translucent 105': {
@@ -928,6 +980,12 @@
         rearSpillIntensity: 0.42,
         rearBeamDeg: 165,
         focusBeamRange: [110, 148],
+        sizeResponse: {
+          lossStopsPerStop: 0.42,
+          beamDegPerStop: 14,
+          spillPerStop: 0.24,
+          beamClamp: [104, 156]
+        },
         verified: 'Public geom: 105 cm open; 38 cm deep; 16 rods; translucent shoot-through, broad spill'
       },
       'Softlight Dish White 52.5': {
@@ -1043,6 +1101,27 @@
       return THREE.MathUtils.lerp(75, 105, (zoom - 7) / 3);
     }
 
+    function applyModifierSizeResponse(profile, dimensions, state) {
+      if (!profile.sizeResponse || !Number.isFinite(dimensions.scale)) return { ...state, sizeAdjusted: false };
+      const rules = profile.sizeResponse;
+      const scaleStops = THREE.MathUtils.clamp(Math.log2(Math.max(0.35, dimensions.scale)), -1.35, 1.25);
+      if (Math.abs(scaleStops) < 0.001) return { ...state, sizeAdjusted: false };
+
+      let beamDeg = state.beamDeg;
+      let lossStops = state.lossStops;
+      let spillFactor = state.spillFactor;
+      let bounceBias = state.bounceBias;
+
+      if (Number.isFinite(rules.beamDegPerStop)) beamDeg += rules.beamDegPerStop * scaleStops;
+      if (Number.isFinite(rules.lossStopsPerStop)) lossStops += rules.lossStopsPerStop * scaleStops;
+      if (Number.isFinite(rules.spillPerStop)) spillFactor *= Math.pow(2, rules.spillPerStop * scaleStops);
+      if (Number.isFinite(rules.bouncePerStop)) bounceBias *= Math.pow(2, rules.bouncePerStop * scaleStops);
+      if (Array.isArray(rules.beamClamp)) beamDeg = THREE.MathUtils.clamp(beamDeg, rules.beamClamp[0], rules.beamClamp[1]);
+      if (Array.isArray(rules.lossClamp)) lossStops = THREE.MathUtils.clamp(lossStops, rules.lossClamp[0], rules.lossClamp[1]);
+
+      return { beamDeg, lossStops, spillFactor, bounceBias, sizeAdjusted: true };
+    }
+
     function getOpticalProfile(light) {
       const profile = applyEquipmentProfile(light);
       const dimensions = getActiveDimensions(light, profile);
@@ -1050,6 +1129,7 @@
       let lossStops = profile.lossStops || 0;
       let spillFactor = profile.spillFactor;
       let bounceBias = profile.bounceBias;
+      let sizeAdjusted = false;
 
       if (profile.hasZoom) {
         beamDeg = interpolateZoomBeam(light.zoomPosition);
@@ -1061,6 +1141,11 @@
         lossStops += THREE.MathUtils.lerp(0.1, 0, focus);
         spillFactor *= THREE.MathUtils.lerp(0.72, 1.08, focus);
       }
+      ({ beamDeg, lossStops, spillFactor, bounceBias, sizeAdjusted } = applyModifierSizeResponse(
+        profile,
+        dimensions,
+        { beamDeg, lossStops, spillFactor, bounceBias }
+      ));
       if (profile.gridCompatible && light.hasGrid) {
         beamDeg = profile.gridBeamDeg;
         lossStops = profile.gridLossStops;
@@ -1086,6 +1171,9 @@
       let beamBasis = profile.beamReference ? 'ref' : 'est';
       if (profile.hasZoom && ![6, 7, 10].some(position => Math.abs(position - light.zoomPosition) < 0.001)) {
         beamBasis = 'interp';
+      }
+      if (sizeAdjusted) {
+        beamBasis = 'scaled';
       }
       if (profile.gridCompatible && light.hasGrid) {
         beamBasis = profile.gridBeamVerified ? 'spec' : 'est';
@@ -1116,6 +1204,191 @@
     });
 
     const initialSettings = JSON.parse(JSON.stringify(settings));
+    const transferClipboard = {
+      kind: null,
+      sourceIndex: -1,
+      payload: null
+    };
+    const lightTransferButtons = [];
+    const vFlatTransferButtons = [];
+    let activeInteractionTarget = { type: null, index: -1, until: 0 };
+
+    function clonePlain(data) {
+      return JSON.parse(JSON.stringify(data));
+    }
+
+    function omitKeys(data, keys) {
+      const copy = clonePlain(data);
+      keys.forEach((key) => delete copy[key]);
+      return copy;
+    }
+
+    function clearTransferClipboard() {
+      transferClipboard.kind = null;
+      transferClipboard.sourceIndex = -1;
+      transferClipboard.payload = null;
+    }
+
+    function setActiveInteractionTarget(type, index, holdMs = 240) {
+      activeInteractionTarget = {
+        type,
+        index,
+        until: performance.now() + holdMs
+      };
+    }
+
+    function clearActiveInteractionTarget() {
+      activeInteractionTarget = { type: null, index: -1, until: 0 };
+    }
+
+    function isInteractionTargetActive(type, index) {
+      return activeInteractionTarget.type === type
+        && activeInteractionTarget.index === index
+        && performance.now() <= activeInteractionTarget.until;
+    }
+
+    function applyInteractiveMaterialLift(material, lift = 0.16, emissiveGain = 1.25) {
+      if (!material || !material.color) return;
+      material.color.lerp(new THREE.Color(1, 1, 1), lift);
+      if (material.emissive) {
+        material.emissive.lerp(new THREE.Color(1, 1, 1), lift * 0.35);
+        material.emissiveIntensity = Math.max(material.emissiveIntensity || 0, (material.emissiveIntensity || 0) * emissiveGain + 0.05);
+      }
+    }
+
+    function refreshTransferButtons() {
+      lightTransferButtons.forEach(({ index, pasteBtn }) => {
+        const canPaste = transferClipboard.kind === 'light'
+          && !!transferClipboard.payload
+          && transferClipboard.sourceIndex !== index;
+        pasteBtn.disabled = !canPaste;
+      });
+
+      vFlatTransferButtons.forEach(({ index, pasteBtn }) => {
+        const canPaste = transferClipboard.kind === 'vflat'
+          && !!transferClipboard.payload
+          && transferClipboard.sourceIndex !== index;
+        pasteBtn.disabled = !canPaste;
+      });
+    }
+
+    function copyLightSettings(index) {
+      setActiveInteractionTarget('light', index, 520);
+      transferClipboard.kind = 'light';
+      transferClipboard.sourceIndex = index;
+      transferClipboard.payload = omitKeys(settings.lights[index], [
+        'x',
+        'y',
+        'z',
+        'modifier',
+        'sbShape',
+        'publishedSpec',
+        'opticalReadout'
+      ]);
+      refreshTransferButtons();
+    }
+
+    function pasteLightSettings(index) {
+      if (transferClipboard.kind !== 'light' || !transferClipboard.payload) return;
+      setActiveInteractionTarget('light', index, 520);
+      Object.assign(settings.lights[index], clonePlain(transferClipboard.payload));
+      applyEquipmentProfile(settings.lights[index], false);
+      updateLights();
+      gui.controllersRecursive().forEach(c => c.updateDisplay());
+      saveHistory();
+      refreshTransferButtons();
+    }
+
+    function resetLightSettings(index) {
+      const light = settings.lights[index];
+      const preservedEnabled = light.enabled;
+      setActiveInteractionTarget('light', index, 520);
+      Object.assign(light, clonePlain(initialSettings.lights[index]));
+      light.enabled = preservedEnabled;
+      applyEquipmentProfile(light, true);
+      updateLights();
+      gui.controllersRecursive().forEach(c => c.updateDisplay());
+      saveHistory();
+      refreshTransferButtons();
+    }
+
+    function copyVFlatSettings(index) {
+      setActiveInteractionTarget('vflat', index, 520);
+      transferClipboard.kind = 'vflat';
+      transferClipboard.sourceIndex = index;
+      transferClipboard.payload = omitKeys(settings.vflats[index], [
+        'x',
+        'z',
+        'width',
+        'height',
+        'publishedSpec',
+        'currentSize'
+      ]);
+      refreshTransferButtons();
+    }
+
+    function pasteVFlatSettings(index) {
+      if (transferClipboard.kind !== 'vflat' || !transferClipboard.payload) return;
+      setActiveInteractionTarget('vflat', index, 520);
+      Object.assign(settings.vflats[index], clonePlain(transferClipboard.payload));
+      ensureVFlatProfile(settings.vflats[index]);
+      updateVFlats();
+      gui.controllersRecursive().forEach(c => c.updateDisplay());
+      saveHistory();
+      refreshTransferButtons();
+    }
+
+    function resetVFlatSettings(index) {
+      setActiveInteractionTarget('vflat', index, 520);
+      Object.assign(settings.vflats[index], clonePlain(initialSettings.vflats[index]));
+      ensureVFlatProfile(settings.vflats[index]);
+      updateVFlats();
+      gui.controllersRecursive().forEach(c => c.updateDisplay());
+      saveHistory();
+      refreshTransferButtons();
+    }
+
+    function createActionButtonRow(folder, actions) {
+      const host = folder?.domElement?.querySelector('.children') || folder?.domElement;
+      if (!host) return {};
+      const row = document.createElement('div');
+      row.className = 'gui-action-row';
+      const buttons = {};
+      actions.forEach(({ key, label, onClick }) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        button.addEventListener('pointerdown', (event) => {
+          event.stopPropagation();
+        });
+        button.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onClick();
+        });
+        row.appendChild(button);
+        buttons[key] = button;
+      });
+      host.appendChild(row);
+      return buttons;
+    }
+
+    function bindFolderInteractionHighlight(folder, type, index) {
+      const host = folder?.domElement;
+      if (!host) return;
+      const mark = () => setActiveInteractionTarget(type, index, 220);
+      ['pointerdown', 'input', 'change'].forEach((eventName) => {
+        host.addEventListener(eventName, (event) => {
+          const target = event.target;
+          if (!target || !target.tagName) return;
+          if (!target.closest('.controller') && !target.closest('.gui-action-row')) return;
+          const tag = target.tagName;
+          if (tag === 'INPUT' || tag === 'SELECT' || tag === 'BUTTON') {
+            mark();
+          }
+        }, true);
+      });
+    }
 
     const studioEnvironment = new THREE.Group();
     scene.add(studioEnvironment);
@@ -1504,9 +1777,9 @@
         if (profile.materialTuning !== 'preserve') softenSubjectGeometryNormals(child.geometry);
         child.layers.enable(SUBJECT_DISPLAY_LAYER);
         child.castShadow = true;
-        // Human GLB self-shadowing creates fine shadow-map acne on skin at close range.
-        // Object props keep receiveShadow enabled so metal/plastic form and contact read naturally.
-        child.receiveShadow = profile.receiveShadow === true;
+        // Human subjects need to receive cast shadows from cutters such as V-Flats.
+        // Material/normal tuning above suppresses most close-range acne while preserving cut-light behavior.
+        child.receiveShadow = true;
         child.userData = { isSubject: true, subjectKind: profile.kind || 'human' };
         const materials = Array.isArray(child.material) ? child.material : [child.material];
         materials.forEach((material) => tuneSubjectMaterial(material, profile));
@@ -1818,8 +2091,8 @@
     }
 
     function getVFlatPanelWhiteNormal(vFlat, panel) {
-        const outerNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(panel.getWorldQuaternion(new THREE.Quaternion())).normalize();
-        return isVFlatOuterWhite(vFlat.data) ? outerNormal : outerNormal.multiplyScalar(-1);
+        const innerNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(panel.getWorldQuaternion(new THREE.Quaternion())).normalize();
+        return isVFlatOuterWhite(vFlat.data) ? innerNormal.multiplyScalar(-1) : innerNormal;
     }
 
     function updateVFlatGuide(vFlat) {
@@ -2042,8 +2315,11 @@
           : profile.modifier === 'Beauty Dish' ? 0.76
           : 0.95;
       }
+      if (headFace.material.emissive) headFace.material.emissive.set(0x000000);
+      if ('emissiveIntensity' in headFace.material) headFace.material.emissiveIntensity = 0;
       headBody.material.flatShading = false;
       headBody.material.needsUpdate = true;
+      headFace.material.needsUpdate = true;
     }
 
     function rebuildModifierDetails(strobe, data, profile, dimensions, fz) {
@@ -2305,24 +2581,27 @@
         ctx.fillRect(0, 0, texSize, texSize);
         ctx.fillStyle = 'white';
         
-        if (type === 'Softbox' && shape === 'Rectangular') {
-            const w = dimensions.widthCm;
-            const h = dimensions.heightCm;
-            const diag = Math.sqrt(w * w + h * h);
-            const scale = (texSize * 0.9) / diag;
+	        if (type === 'Softbox' && shape === 'Rectangular') {
+	            const w = dimensions.widthCm;
+	            const h = dimensions.heightCm;
+	            const diag = Math.sqrt(w * w + h * h);
+	            const scale = (texSize * 0.9) / diag;
             const rw = w * scale;
             const rh = h * scale;
             const rx = (texSize - rw) / 2;
             const ry = (texSize - rh) / 2;
             
-            ctx.filter = `blur(${hasGrid ? 7 : 16}px)`;
-            ctx.fillRect(rx, ry, rw, rh);
-            ctx.fillRect(rx, ry, rw, rh); 
-            if (!hasGrid) ctx.fillRect(rx + rw*0.1, ry + rh*0.1, rw*0.8, rh*0.8);
-        } else if (type === 'Softbox' && shape === 'Octabox') {
-            const radius = (texSize * 0.9) / 2;
-            const cx = texSize / 2;
-            const cy = texSize / 2;
+	            ctx.filter = `blur(${hasGrid ? 12 : 20}px)`;
+	            ctx.globalAlpha = hasGrid ? 0.92 : 1;
+	            ctx.fillRect(rx, ry, rw, rh);
+	            ctx.fillRect(rx, ry, rw, rh);
+	            ctx.globalAlpha = hasGrid ? 0.54 : 0.72;
+	            ctx.fillRect(rx + rw * 0.08, ry + rh * 0.08, rw * 0.84, rh * 0.84);
+	            ctx.globalAlpha = 1;
+	        } else if (type === 'Softbox' && shape === 'Octabox') {
+	            const radius = (texSize * 0.9) / 2;
+	            const cx = texSize / 2;
+	            const cy = texSize / 2;
             const drawOcta = (scale) => {
                 ctx.beginPath();
                 for (let i = 0; i < 8; i++) {
@@ -2335,16 +2614,17 @@
                 ctx.closePath();
             };
 
-            ctx.filter = `blur(${hasGrid ? 7 : 16}px)`;
-            drawOcta(1);
-            ctx.fill();
-            drawOcta(1);
-            ctx.fill();
-            if (!hasGrid) {
-                drawOcta(0.82);
-                ctx.fill();
-            }
-        } else if (type === 'Umbrella' || type === 'Beauty Dish') {
+	            ctx.filter = `blur(${hasGrid ? 12 : 20}px)`;
+	            ctx.globalAlpha = hasGrid ? 0.94 : 1;
+	            drawOcta(1);
+	            ctx.fill();
+	            drawOcta(1);
+	            ctx.fill();
+	            ctx.globalAlpha = hasGrid ? 0.52 : 0.72;
+	            drawOcta(0.84);
+	            ctx.fill();
+	            ctx.globalAlpha = 1;
+	        } else if (type === 'Umbrella' || type === 'Beauty Dish') {
             const radius = (texSize * 0.9) / 2;
             const cx = texSize / 2;
             const cy = texSize / 2;
@@ -2893,12 +3173,15 @@
         strobe.fixtureGroup.traverse((part) => {
           if (part.isMesh) part.castShadow = data.castFixtureShadow === true;
         });
-        styleModifierSurface(headBody, headFace, profile, color);
-        if (headFace.geometry) headFace.geometry.dispose();
-        headFace.geometry = fg;
-        headFace.position.z = fz + modifierOffset;
-        rebuildModifierDetails(strobe, data, profile, dimensions, fz);
-        strobe.modifierDetails.position.z = modifierOffset;
+	        styleModifierSurface(headBody, headFace, profile, color);
+	        if (headFace.geometry) headFace.geometry.dispose();
+	        headFace.geometry = fg;
+	        headFace.position.z = fz + modifierOffset;
+	        if (isInteractionTargetActive('light', idx)) {
+	          applyInteractiveMaterialLift(headBody.material, 0.16, 1.18);
+	        }
+	        rebuildModifierDetails(strobe, data, profile, dimensions, fz);
+	        strobe.modifierDetails.position.z = modifierOffset;
 
         if (gridMesh.geometry) gridMesh.geometry.dispose();
         gridMesh.geometry = fg.clone();
@@ -2917,9 +3200,9 @@
             }
         }
         
-        const newMap = getModifierMap(data, profile, dimensions);
-        const usesRectAreaEmitter = profile.modifier === 'Softbox' && profile.shape === 'Rectangular';
-        spotLight.map = newMap;
+	        const newMap = getModifierMap(data, profile, dimensions);
+	        const usesAreaEmitter = profile.modifier === 'Softbox';
+	        spotLight.map = newMap;
 
         group.position.set(data.x, data.y, data.z);
         
@@ -2932,34 +3215,37 @@
             return;
         }
 
-        spotLight.color.copy(color);
-        headFace.material.color.copy(color);
-        headFace.material.color.multiplyScalar(THREE.MathUtils.clamp(optics.energyWs * 0.012, 0.15, 1));
-        const usesModeledRectGrid = profile.modifier === 'Softbox' && profile.shape === 'Rectangular';
-        gridMesh.visible = equipmentVisible && profile.gridCompatible === true && data.hasGrid && !usesModeledRectGrid;
-        areaLight.visible = usesRectAreaEmitter;
-        areaLight.color.copy(color);
-        areaLight.width = w;
-        areaLight.height = h;
-        areaLight.position.set(0, 0, fz + modifierOffset - 0.004);
+	        spotLight.color.copy(color);
+	        headFace.material.color.copy(color);
+	        headFace.material.color.multiplyScalar(THREE.MathUtils.clamp(optics.energyWs * 0.012, 0.15, 1));
+	        if (isInteractionTargetActive('light', idx)) {
+	          applyInteractiveMaterialLift(headFace.material, 0.18, 1.12);
+	        }
+	        const usesModeledRectGrid = profile.modifier === 'Softbox' && profile.shape === 'Rectangular';
+	        gridMesh.visible = equipmentVisible && profile.gridCompatible === true && data.hasGrid && !usesModeledRectGrid;
+	        areaLight.visible = usesAreaEmitter;
+	        areaLight.color.copy(color);
+	        areaLight.width = profile.shape === 'Rectangular' ? w : s * 0.82;
+	        areaLight.height = profile.shape === 'Rectangular' ? h : s * 0.82;
+	        areaLight.position.set(0, 0, fz + modifierOffset - 0.004);
 
         const distToSubject = Math.max(0.5, group.position.distanceTo(lightAimPoint));
         const physicalSourceSpan = dimensions.widthCm ? Math.sqrt(w * w + h * h) : s;
         const sourceSpan = physicalSourceSpan * (profile.shadowSourceScale || 1);
         const apparentSize = 2 * Math.atan((sourceSpan * 0.5) / distToSubject);
         const virtualFocal = THREE.MathUtils.clamp((physicalSourceSpan * 0.5) / Math.tan(optics.halfAngle), 0.04, 3.2);
-        let penumbra = profile.modifier === 'Hard Reflector' ? 0.25
-          : profile.modifier === 'Beauty Dish' ? 0.7
-          : profile.modifier === 'Bare Bulb' ? 0.58
-          : 0.98;
-        let softnessScale = profile.modifier === 'Hard Reflector' ? 10
-          : profile.modifier === 'Beauty Dish' ? 14
-          : profile.modifier === 'Bare Bulb' ? 10
-          : 14;
-        if (profile.gridCompatible && data.hasGrid) {
-          penumbra *= 0.7;
-          softnessScale *= 0.62;
-        }
+	        let penumbra = profile.modifier === 'Hard Reflector' ? 0.25
+	          : profile.modifier === 'Beauty Dish' ? 0.7
+	          : profile.modifier === 'Bare Bulb' ? 0.58
+	          : 0.98;
+	        let softnessScale = profile.modifier === 'Hard Reflector' ? 10
+	          : profile.modifier === 'Beauty Dish' ? 14
+	          : profile.modifier === 'Bare Bulb' ? 10
+	          : 14;
+	        if (profile.gridCompatible && data.hasGrid) {
+	          penumbra *= profile.gridPenumbraScale || 0.7;
+	          softnessScale *= profile.gridSoftnessScale || 0.62;
+	        }
         // Penumbra expands as the shadow travels past the subject toward floor or wall.
         // This prevents compact heads from making implausibly cut-out distant shadows.
         const receiverTravel = getShadowReceiverTravel(group.position, lightAimPoint);
@@ -2979,15 +3265,22 @@
         spotLight.userData.bounceIntensity = optics.candela;
         spotLight.userData.penumbraWidth = penumbraWidth;
         spotLight.userData.shadowReceiverTravel = receiverTravel;
-        if (usesRectAreaEmitter) {
-              // Preserve the rectangular diffuser footprint without reducing a 3x4
-              // box far below an equivalently metered octa source.
-              areaLight.intensity = optics.candela * (data.hasGrid ? 0.02 : 0.035);
-              spotLight.intensity = optics.candela * (data.hasGrid ? 0.68 : 0.78);
-        } else {
-          areaLight.intensity = 0;
-          spotLight.intensity = optics.candela;
-        }
+	        if (usesAreaEmitter) {
+	          // Softboxes still emit from a broad diffuser even when a fabric grid is added.
+	          // The grid narrows spread and trims spill, but should not collapse the source
+	          // into a tiny hard spotlight.
+	          const areaGain = data.hasGrid
+	            ? (profile.gridEmitterAreaGain ?? 0.024)
+	            : (profile.emitterAreaGain ?? 0.034);
+	          const spotGain = data.hasGrid
+	            ? (profile.gridEmitterSpotGain ?? 0.72)
+	            : (profile.emitterSpotGain ?? 0.74);
+	          areaLight.intensity = optics.candela * areaGain;
+	          spotLight.intensity = optics.candela * spotGain;
+	        } else {
+	          areaLight.intensity = 0;
+	          spotLight.intensity = optics.candela;
+	        }
         spotLight.angle = optics.halfAngle;
         spotLight.penumbra = penumbra;
         spotLight.shadow.radius = shadowRad;
@@ -3376,9 +3669,11 @@
                 if (userData.isVFlat) {
                     draggedStrobe = vflatObjs[userData.vflatIndex];
                     selectStudioObject('vflat', userData.vflatIndex);
+                    setActiveInteractionTarget('vflat', userData.vflatIndex, 320);
                 } else {
                     draggedStrobe = strobes[userData.strobeIndex];
                     selectStudioObject('light', userData.strobeIndex);
+                    setActiveInteractionTarget('light', userData.strobeIndex, 320);
                 }
                 
                 if (shiftActive) {
@@ -3471,6 +3766,7 @@
         }
 
         if (dragAction === 'translate-y') {
+            if (selectedTarget.type === 'light') setActiveInteractionTarget('light', selectedTarget.index, 320);
             const newPos = getStableHeightDragPosition(e, dragCandidate);
             
             draggedStrobe.data.y = newPos.y;
@@ -3487,6 +3783,8 @@
             
         } else if (dragAction === 'translate') {
             const isVFlat = draggedStrobe.meshL && draggedStrobe.meshL.userData.isVFlat;
+            if (selectedTarget.type === 'vflat') setActiveInteractionTarget('vflat', selectedTarget.index, 320);
+            if (selectedTarget.type === 'light') setActiveInteractionTarget('light', selectedTarget.index, 320);
             const newPos = getStableFloorDragPosition(e, dragCandidate, isVFlat ? 'vflat' : 'fixture');
             
             draggedStrobe.data.x = newPos.x;
@@ -3509,6 +3807,8 @@
             updateSelectionGuides();
             gui.controllersRecursive().forEach(c => c.updateDisplay());
         } else if (dragAction === 'rotate') {
+            if (selectedTarget.type === 'vflat') setActiveInteractionTarget('vflat', selectedTarget.index, 320);
+            if (selectedTarget.type === 'light') setActiveInteractionTarget('light', selectedTarget.index, 320);
             const dx = e.clientX - lastMouseX;
             const dy = e.clientY - lastMouseY;
 
@@ -3687,7 +3987,7 @@
     ));
 
     function updateVFlats() {
-        vflatObjs.forEach(vf => {
+        vflatObjs.forEach((vf, vFlatIndex) => {
            const { group, leftWing, rightWing, meshL, meshR, contactL, contactR, matFront, matBack, data } = vf;
            ensureVFlatProfile(data);
            group.visible = data.enabled;
@@ -3697,8 +3997,12 @@
            group.rotation.set(0, -data.pan, 0); 
 
            const isOuterWhite = isVFlatOuterWhite(data);
-           applySurfacePreset(matFront, isOuterWhite ? SURFACE_PRESETS.vFlatWhite : SURFACE_PRESETS.vFlatBlack);
-           applySurfacePreset(matBack, isOuterWhite ? SURFACE_PRESETS.vFlatBlack : SURFACE_PRESETS.vFlatWhite);
+           applySurfacePreset(matFront, isOuterWhite ? SURFACE_PRESETS.vFlatBlack : SURFACE_PRESETS.vFlatWhite);
+           applySurfacePreset(matBack, isOuterWhite ? SURFACE_PRESETS.vFlatWhite : SURFACE_PRESETS.vFlatBlack);
+           if (isInteractionTargetActive('vflat', vFlatIndex)) {
+             applyInteractiveMaterialLift(matFront, 0.14, 1);
+             applyInteractiveMaterialLift(matBack, 0.14, 1);
+           }
 
            const w = data.width;
            const h = data.height;
@@ -3729,8 +4033,8 @@
             if (!vFlat.group.visible) return;
             [vFlat.meshL, vFlat.meshR].forEach((panel) => {
                 const panelPos = panel.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, VFLAT_FLOOR_SEAL_DEPTH / 2, 0));
-                const outerNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(panel.getWorldQuaternion(new THREE.Quaternion())).normalize();
-                const blackNormal = isVFlatOuterWhite(vFlat.data) ? outerNormal.multiplyScalar(-1) : outerNormal;
+                const whiteNormal = getVFlatPanelWhiteNormal(vFlat, panel);
+                const blackNormal = whiteNormal.clone().multiplyScalar(-1);
                 const toSubject = subjectPoint.clone().sub(panelPos);
                 const distance = Math.max(0.45, toSubject.length());
                 const facing = Math.max(0, blackNormal.dot(toSubject.normalize()));
@@ -3995,6 +4299,7 @@
         let label = `Strobe ${idx + 1}`;
         if (idx === 0) label = 'Main Light'; else if (idx === 1) label = 'Sub Light'; else if (idx === 2) label = 'Top Light'; else if (idx === 3) label = 'Fill Left'; else if (idx === 4) label = 'Fill Right';
         const folder = lightingFolder.addFolder(label);
+        bindFolderInteractionHighlight(folder, 'light', idx);
         folder.add(lData, 'enabled').name('Light On').onChange(updateLights);
         folder.add(lData, 'uiPower', 1.0, 10.0, 0.1).name('Output (1-10)').onChange(updateLights);
         folder.add(lData, 'colorTemp', 2500, 10000, 50).name('Color Temp (K)').onChange(updateLights);
@@ -4023,7 +4328,12 @@
         const aimFolder = folder.addFolder('Manual Aim').close();
         aimFolder.add(lData, 'pan', -Math.PI*2, Math.PI*2).name('Pan').onChange(updateLights);
         aimFolder.add(lData, 'tilt', -Math.PI*2, Math.PI*2).name('Tilt').onChange(updateLights);
-        folder.add({ resetLight: () => { Object.assign(lData, JSON.parse(JSON.stringify(initialSettings.lights[idx]))); updateLights(); folder.controllersRecursive().forEach(c => c.updateDisplay()); saveHistory(); } }, 'resetLight').name('Reset Light');
+        const lightButtons = createActionButtonRow(folder, [
+          { key: 'copyBtn', label: 'Copy', onClick: () => copyLightSettings(idx) },
+          { key: 'pasteBtn', label: 'Paste', onClick: () => pasteLightSettings(idx) },
+          { key: 'resetBtn', label: 'Reset', onClick: () => resetLightSettings(idx) }
+        ]);
+        lightTransferButtons.push({ index: idx, ...lightButtons });
         if (idx !== 0) folder.close();
     });
 
@@ -4031,6 +4341,7 @@
     settings.vflats.forEach((vData, idx) => {
         ensureVFlatProfile(vData);
         const folder = vflatsRootFolder.addFolder(`V-Flat ${idx + 1}`);
+        bindFolderInteractionHighlight(folder, 'vflat', idx);
         const refreshVFlat = () => {
             updateVFlats();
             folder.controllersRecursive().forEach(controller => controller.updateDisplay());
@@ -4046,11 +4357,18 @@
         trFolder.add(vData, 'x', -10, 10).name('X Left / Right').onChange(refreshVFlat);
         trFolder.add(vData, 'z', -10, 10).name('Z Front / Back').onChange(refreshVFlat);
         trFolder.add(vData, 'pan', -Math.PI, Math.PI).name('Rotation').onChange(refreshVFlat);
+        const vFlatButtons = createActionButtonRow(folder, [
+          { key: 'copyBtn', label: 'Copy', onClick: () => copyVFlatSettings(idx) },
+          { key: 'pasteBtn', label: 'Paste', onClick: () => pasteVFlatSettings(idx) },
+          { key: 'resetBtn', label: 'Reset', onClick: () => resetVFlatSettings(idx) }
+        ]);
+        vFlatTransferButtons.push({ index: idx, ...vFlatButtons });
         folder.close();
     });
 
     updateLights();
     updateVFlats();
+    refreshTransferButtons();
 
     const resetBtn = document.getElementById('reset-btn');
     const topDownBtn = document.getElementById('top-down-btn');
@@ -4076,6 +4394,7 @@
 
     resetBtn.addEventListener('click', () => {
       clearSelectionTarget(true);
+      clearTransferClipboard();
       if (previousCameraState) { previousCameraState = null; topDownBtn.style.background = ''; topDownBtn.style.color = ''; controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE; controls.touches.ONE = THREE.TOUCH.ROTATE; }
       if (previousCloseupCameraState) previousCloseupCameraState = null;
       const init = JSON.parse(JSON.stringify(initialSettings));
@@ -4083,7 +4402,7 @@
         if (Array.isArray(init[key])) { init[key].forEach((item, i) => Object.assign(settings[key][i], item)); } else { settings[key] = init[key]; }
       }
       updateSubjectModel();
-      updateStudioGeom(); updateLights(); updateVFlats(); gui.controllersRecursive().forEach(c => c.updateDisplay());
+      updateStudioGeom(); updateLights(); updateVFlats(); gui.controllersRecursive().forEach(c => c.updateDisplay()); refreshTransferButtons();
       camera.position.copy(DEFAULT_CAMERA_POSITION); camera.fov = getFOV(settings.focalLength); camera.up.set(0, 1, 0); camera.updateProjectionMatrix(); controls.target.copy(DEFAULT_CAMERA_TARGET); controls.update(); syncScrollbars();
       document.getElementById('studio-tilt').value = "0"; saveHistory(); 
     });
@@ -4626,8 +4945,7 @@
                     if (!reflective) { vLight.intensity = 0; vLight.visible = false; vLight.castShadow = false; return; }
 
                     const panelPos = panel.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, VFLAT_FLOOR_SEAL_DEPTH / 2, 0));
-                    const outerNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(panel.getWorldQuaternion(new THREE.Quaternion())).normalize();
-                    const whiteNormal = isVFlatOuterWhite(vFlat.data) ? outerNormal : outerNormal.multiplyScalar(-1);
+                    const whiteNormal = getVFlatPanelWhiteNormal(vFlat, panel);
                     const subjectVector = subjectPoint.clone().sub(panelPos);
                     const distance = Math.max(0.6, subjectVector.length());
                     const facingSubject = Math.max(0, whiteNormal.dot(subjectVector.normalize()));
@@ -4715,6 +5033,12 @@
 
     function animate() {
       requestAnimationFrame(animate);
+      if (activeInteractionTarget.type && performance.now() > activeInteractionTarget.until) {
+          const expiredType = activeInteractionTarget.type;
+          clearActiveInteractionTarget();
+          if (expiredType === 'light') updateLights();
+          else if (expiredType === 'vflat') updateVFlats();
+      }
       simulateBounce(); updateBounces(); controls.update();
       updateSelectionGuides();
       if (isLoadingModel) {
