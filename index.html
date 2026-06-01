@@ -233,6 +233,7 @@
     scene.background = new THREE.Color('#1a1110');
     // Receiver-isolated indirect lighting avoids painting proxy highlights on studio surfaces.
     const subjectIndirectScene = new THREE.Scene();
+    const subjectShadowScene = new THREE.Scene();
     const SUBJECT_DISPLAY_LAYER = 1;
 
     const getFOV = (focalLength) => 2 * Math.atan( 24 / ( 2 * focalLength ) ) * ( 180 / Math.PI );
@@ -642,6 +643,9 @@
         indirectPolygonOffsetFactor: -3,
         indirectPolygonOffsetUnits: -3,
         indirectRenderOrder: 6,
+        cutShadowOpacity: 0.78,
+        cutShadowPolygonOffsetFactor: -2,
+        cutShadowPolygonOffsetUnits: -2,
         maxTextureAnisotropy: 8,
         normalPositionTolerance: 0.0008,
         normalScale: 0.42,
@@ -1641,6 +1645,7 @@
     scene.add(modelGroup);
     let currentModel = null;
     let vFlatFillSubject = null;
+    let vFlatCutShadowSubject = null;
     const strobes = [];
     const interactableMeshes = [];
     let heightCtrl = null;
@@ -1657,6 +1662,17 @@
         });
         subjectIndirectScene.remove(vFlatFillSubject);
         vFlatFillSubject = null;
+    }
+
+    function disposeVFlatCutShadowSubject() {
+        if (!vFlatCutShadowSubject) return;
+        vFlatCutShadowSubject.traverse((child) => {
+            if (!child.isMesh || !child.material) return;
+            const materials = Array.isArray(child.material) ? child.material : [child.material];
+            materials.forEach((material) => material.dispose());
+        });
+        subjectShadowScene.remove(vFlatCutShadowSubject);
+        vFlatCutShadowSubject = null;
     }
 
     function createVFlatFillMaterial(sourceMaterial) {
@@ -1679,6 +1695,22 @@
         });
     }
 
+    function createVFlatCutShadowMaterial(sourceMaterial) {
+        return new THREE.ShadowMaterial({
+            color: 0x000000,
+            opacity: ENGINE_CALIBRATION.subjectDisplay.cutShadowOpacity,
+            transparent: true,
+            depthWrite: false,
+            depthTest: true,
+            polygonOffset: true,
+            polygonOffsetFactor: ENGINE_CALIBRATION.subjectDisplay.cutShadowPolygonOffsetFactor,
+            polygonOffsetUnits: ENGINE_CALIBRATION.subjectDisplay.cutShadowPolygonOffsetUnits,
+            side: sourceMaterial && sourceMaterial.side !== undefined ? sourceMaterial.side : THREE.FrontSide,
+            alphaMap: sourceMaterial && sourceMaterial.alphaMap ? sourceMaterial.alphaMap : null,
+            alphaTest: sourceMaterial && sourceMaterial.alphaTest ? sourceMaterial.alphaTest : 0
+        });
+    }
+
     function rebuildVFlatFillSubject() {
         disposeVFlatFillSubject();
         if (!currentModel) return;
@@ -1696,6 +1728,23 @@
         subjectIndirectScene.add(vFlatFillSubject);
     }
 
+    function rebuildVFlatCutShadowSubject() {
+        disposeVFlatCutShadowSubject();
+        if (!currentModel) return;
+        vFlatCutShadowSubject = currentModel.clone(true);
+        vFlatCutShadowSubject.traverse((child) => {
+            if (!child.isMesh) return;
+            const sourceMaterial = child.material;
+            child.material = Array.isArray(sourceMaterial)
+                ? sourceMaterial.map((material) => createVFlatCutShadowMaterial(material))
+                : createVFlatCutShadowMaterial(sourceMaterial);
+            child.castShadow = false;
+            child.receiveShadow = true;
+            child.renderOrder = ENGINE_CALIBRATION.subjectDisplay.indirectRenderOrder - 1;
+        });
+        subjectShadowScene.add(vFlatCutShadowSubject);
+    }
+
     function syncVFlatFillSubject() {
         if (!vFlatFillSubject || !currentModel) return;
         vFlatFillSubject.position.copy(currentModel.position);
@@ -1703,6 +1752,17 @@
         vFlatFillSubject.scale.copy(currentModel.scale);
         vFlatFillSubject.visible = currentModel.visible;
         vFlatFillSubject.updateMatrixWorld(true);
+    }
+
+    function syncVFlatCutShadowSubject() {
+        if (!vFlatCutShadowSubject || !currentModel) return;
+        vFlatCutShadowSubject.position.copy(currentModel.position);
+        vFlatCutShadowSubject.quaternion.copy(currentModel.quaternion);
+        vFlatCutShadowSubject.scale.copy(currentModel.scale);
+        const needsCutShadowOverlay = getSubjectProfile(settings.subjectModel).receiveShadow !== true;
+        const hasEnabledVFlat = settings.vflats.some((vFlat) => vFlat.enabled);
+        vFlatCutShadowSubject.visible = currentModel.visible && needsCutShadowOverlay && hasEnabledVFlat;
+        vFlatCutShadowSubject.updateMatrixWorld(true);
     }
 
     function tuneSubjectMaterial(material, profile = getSubjectProfile(settings.subjectModel)) {
@@ -1777,9 +1837,7 @@
         if (profile.materialTuning !== 'preserve') softenSubjectGeometryNormals(child.geometry);
         child.layers.enable(SUBJECT_DISPLAY_LAYER);
         child.castShadow = true;
-        // Human subjects need to receive cast shadows from cutters such as V-Flats.
-        // Material/normal tuning above suppresses most close-range acne while preserving cut-light behavior.
-        child.receiveShadow = true;
+        child.receiveShadow = profile.receiveShadow === true;
         child.userData = { isSubject: true, subjectKind: profile.kind || 'human' };
         const materials = Array.isArray(child.material) ? child.material : [child.material];
         materials.forEach((material) => tuneSubjectMaterial(material, profile));
@@ -1798,6 +1856,7 @@
 
             modelGroup.remove(currentModel);
             disposeVFlatFillSubject();
+            disposeVFlatCutShadowSubject();
             if (currentModel.isMesh) {
                 const index = interactableMeshes.indexOf(currentModel);
                 if (index > -1) interactableMeshes.splice(index, 1);
@@ -1830,6 +1889,7 @@
             currentModel.rotation.y = settings.subjectRotation || 0;
             modelGroup.add(currentModel);
             rebuildVFlatFillSubject();
+            rebuildVFlatCutShadowSubject();
             interactableMeshes.push(currentModel);
             if (strobes.length === settings.lights.length) {
                 updateLights();
@@ -1844,6 +1904,7 @@
                 currentModel.position.set(prevX, getSubjectPlacementY(type), prevZ);
                 modelGroup.add(currentModel);
                 rebuildVFlatFillSubject();
+                rebuildVFlatCutShadowSubject();
                 currentModel.traverse((child) => {
                     if (child.isMesh) {
                         configureHumanSubjectMesh(child, profile);
@@ -1898,6 +1959,7 @@
                         currentModel.position.set(prevX, getSubjectPlacementY(type), prevZ);
                         modelGroup.add(currentModel);
                         rebuildVFlatFillSubject();
+                        rebuildVFlatCutShadowSubject();
                         currentModel.traverse((child) => {
                             if (child.isMesh) {
                                 interactableMeshes.push(child);
@@ -2520,6 +2582,22 @@
     const automatedBounceGroup = new THREE.Group();
     scene.add(automatedBounceGroup);
 
+    const subjectCutShadowLights = [];
+    for (let i = 0; i < settings.lights.length; i++) {
+        const cutLight = new THREE.SpotLight(0xffffff, 0);
+        cutLight.visible = false;
+        cutLight.castShadow = true;
+        cutLight.shadow.mapSize.width = 2048;
+        cutLight.shadow.mapSize.height = 2048;
+        cutLight.shadow.bias = -0.00002;
+        cutLight.shadow.normalBias = 0.00025;
+        cutLight.shadow.radius = 5;
+        cutLight.shadow.blurSamples = 16;
+        subjectShadowScene.add(cutLight);
+        subjectShadowScene.add(cutLight.target);
+        subjectCutShadowLights.push(cutLight);
+    }
+
     const automatedBounces = [];
     for (let i = 0; i < settings.lights.length; i++) {
         const bounceLight = new THREE.SpotLight(0xffffff, 0, 20, Math.PI / 4, 0.5, 2);
@@ -3121,6 +3199,7 @@
 
       strobes.forEach((strobe, idx) => {
         const { group, head, headBody, headFace, aimHandle, gridMesh, spotLight, rearSpillLight, areaLight, data, uiControls } = strobe;
+        const cutShadowLight = subjectCutShadowLights[idx];
         const optics = getOpticalProfile(data);
         const profile = optics.profile;
         const dimensions = optics.dimensions;
@@ -3212,6 +3291,8 @@
             rearSpillLight.intensity = 0;
             areaLight.intensity = 0;
             areaLight.visible = false;
+            cutShadowLight.intensity = 0;
+            cutShadowLight.visible = false;
             return;
         }
 
@@ -3332,6 +3413,23 @@
         const upVec = new THREE.Vector3(0, 1, 0);
         upVec.applyQuaternion(head.getWorldQuaternion(new THREE.Quaternion()));
         spotLight.up.copy(upVec);
+
+        cutShadowLight.color.copy(color);
+        cutShadowLight.intensity = 1;
+        cutShadowLight.angle = spotLight.angle;
+        cutShadowLight.penumbra = spotLight.penumbra;
+        cutShadowLight.decay = 2;
+        cutShadowLight.distance = 0;
+        cutShadowLight.shadow.camera.near = spotLight.shadow.camera.near;
+        cutShadowLight.shadow.camera.far = spotLight.shadow.camera.far;
+        cutShadowLight.shadow.radius = spotLight.shadow.radius;
+        cutShadowLight.shadow.bias = spotLight.shadow.bias;
+        cutShadowLight.shadow.normalBias = spotLight.shadow.normalBias;
+        cutShadowLight.position.copy(spotLight.getWorldPosition(new THREE.Vector3()));
+        cutShadowLight.target.position.copy(spotLight.target.getWorldPosition(new THREE.Vector3()));
+        cutShadowLight.target.updateMatrixWorld();
+        cutShadowLight.visible = settings.vflats.some((vFlat) => vFlat.enabled);
+        cutShadowLight.shadow.camera.updateProjectionMatrix();
 
         const emitPos = spotLight.getWorldPosition(new THREE.Vector3());
         const emitTarget = spotLight.target.getWorldPosition(new THREE.Vector3());
@@ -3986,11 +4084,32 @@
         }))
     ));
 
+    const vFlatShadowCasterMaterial = new THREE.MeshBasicMaterial({
+        color: 0x000000,
+        colorWrite: false,
+        depthWrite: true,
+        side: THREE.DoubleSide
+    });
+    const vFlatShadowCasters = vflatObjs.map(() => {
+        const group = new THREE.Group();
+        const leftCaster = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), vFlatShadowCasterMaterial);
+        const rightCaster = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), vFlatShadowCasterMaterial);
+        leftCaster.castShadow = true;
+        rightCaster.castShadow = true;
+        leftCaster.receiveShadow = false;
+        rightCaster.receiveShadow = false;
+        group.add(leftCaster, rightCaster);
+        subjectShadowScene.add(group);
+        return { group, leftCaster, rightCaster };
+    });
+
     function updateVFlats() {
         vflatObjs.forEach((vf, vFlatIndex) => {
            const { group, leftWing, rightWing, meshL, meshR, contactL, contactR, matFront, matBack, data } = vf;
+           const shadowCasters = vFlatShadowCasters[vFlatIndex];
            ensureVFlatProfile(data);
            group.visible = data.enabled;
+           shadowCasters.group.visible = data.enabled;
            if (!data.enabled) return;
 
            group.position.set(data.x, data.height / 2, data.z);
@@ -4021,6 +4140,16 @@
            const hingeRotation = THREE.MathUtils.degToRad((180 - THREE.MathUtils.clamp(data.foldAngle, 20, 180)) * 0.5);
            leftWing.rotation.set(0, -hingeRotation, 0);
            rightWing.rotation.set(0, hingeRotation, 0);
+
+           group.updateMatrixWorld(true);
+           meshL.updateWorldMatrix(true, false);
+           meshR.updateWorldMatrix(true, false);
+           shadowCasters.leftCaster.position.copy(meshL.getWorldPosition(new THREE.Vector3()));
+           shadowCasters.leftCaster.quaternion.copy(meshL.getWorldQuaternion(new THREE.Quaternion()));
+           shadowCasters.leftCaster.scale.copy(meshL.getWorldScale(new THREE.Vector3()));
+           shadowCasters.rightCaster.position.copy(meshR.getWorldPosition(new THREE.Vector3()));
+           shadowCasters.rightCaster.quaternion.copy(meshR.getWorldQuaternion(new THREE.Quaternion()));
+           shadowCasters.rightCaster.scale.copy(meshR.getWorldScale(new THREE.Vector3()));
         });
         updateLights();
         updateBounces();
@@ -5023,11 +5152,16 @@
 
     function renderStudioFrame(viewCamera = camera) {
       renderer.render(scene, viewCamera);
-      if (!vFlatFillSubject) return;
-      syncVFlatFillSubject();
       const wasAutoClear = renderer.autoClear;
       renderer.autoClear = false;
-      renderer.render(subjectIndirectScene, viewCamera);
+      if (vFlatCutShadowSubject) {
+        syncVFlatCutShadowSubject();
+        renderer.render(subjectShadowScene, viewCamera);
+      }
+      if (vFlatFillSubject) {
+        syncVFlatFillSubject();
+        renderer.render(subjectIndirectScene, viewCamera);
+      }
       renderer.autoClear = wasAutoClear;
     }
 
